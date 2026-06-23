@@ -1,0 +1,10 @@
+# Mirror Test for LLMs — dependencies
+# Install with:  pip install -r requirements.txt
+#
+# You only strictly need the SDK for the model you're running, but installing
+# all four keeps everyone's environment identical.
+
+openai>=1.30.0                 # GPT-4o
+anthropic>=0.40.0              # Claude
+google-generativeai>=0.8.0     # Gemini
+groq>=0.11.0                   # Llama 3 (via Groq)

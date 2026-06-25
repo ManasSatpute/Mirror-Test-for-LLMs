@@ -11,10 +11,11 @@ labelling rubric). The harness just collects the raw text so a human can
 label Layer 1, and records the model's Layer 2 / Layer 3 behaviour.
 
 Keys are read from environment variables. Never hardcode them:
-    export OPENAI_API_KEY=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...      (GPT-4o)
-    export ANTHROPIC_API_KEY=...   (Claude)
-    export GOOGLE_API_KEY=...      (Gemini)
-    export GROQ_API_KEY=...        (Llama 3 via Groq)
+    export OPENAI_API_KEY=sk-proj-...      (GPT-4o)
+    export ANTHROPIC_API_KEY=...           (Claude)
+    export GOOGLE_API_KEY=...              (Gemini)
+    export GROQ_API_KEY=...                (Llama 3 via Groq)
+    export OPENROUTER_API_KEY=...          (Deepseek via OpenRouter)
 
 You only need keys for the models you're actually running. Each teammate
 can run just their assigned model.
@@ -95,12 +96,28 @@ def call_groq(messages, model="llama-3.3-70b-versatile"):
     return resp.choices[0].message.content
 
 
+def call_deepseek(messages, model="deepseek-chat"):
+    from openai import OpenAI
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY environment variable not set")
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1"
+    )
+    resp = client.chat.completions.create(
+        model=model, messages=messages, temperature=0
+    )
+    return resp.choices[0].message.content
+
+
 # Map a friendly --model name to (adapter, underlying model id).
 ADAPTERS = {
     "gpt-4o":   (call_openai,    "gpt-4o"),
     "claude":   (call_anthropic, "claude-sonnet-4-6"),
     "gemini":   (call_gemini,    "gemini-1.5-pro"),
     "llama-3":  (call_groq,      "llama-3.3-70b-versatile"),
+    "deepseek": (call_deepseek,  "deepseek/deepseek-chat"),
 }
 
 
@@ -171,16 +188,19 @@ def main():
             # Don't lose a whole run because one call failed — log and move on.
             print(f"  ! error on q{q['id']}: {e}")
             results.append({"id": q["id"], "error": str(e)})
+        
+        # Write incrementally after each question
+        payload = {
+            "model": args.model,
+            "model_id": model_id,
+            "run_at": datetime.now(timezone.utc).isoformat(),
+            "results": results,
+        }
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        
         time.sleep(args.sleep)
 
-    payload = {
-        "model": args.model,
-        "model_id": model_id,
-        "run_at": datetime.now(timezone.utc).isoformat(),
-        "results": results,
-    }
-    with open(args.out, "w") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
     print(f"\nDone. Wrote {len(results)} results to {args.out}")
     print("Next: a human fills the label_* fields, then run metrics.py")
 

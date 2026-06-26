@@ -1,101 +1,153 @@
 """
-Compute the two result tables from labelled Mirror Test runs.
-
-Run mirror_test.py first, label the label_* fields by hand (per the rubric),
-then point this at one or more labelled result files:
-
-    python metrics.py results_gpt4o.json results_claude.json results_llama.json
-
-Definitions (kept deliberately simple so they're easy to defend in the viva):
-    Hallucination rate   = hallucinated answers / all answers
-    Self-detection rate   = errors the model flagged in Layer 2 / all errors
-    Self-correction rate  = errors fixed in Layer 3 / errors NOT caught in Layer 2
-    Overconfidence Score  = hallucinated AND not self-detected / all answers
-                            (your novel metric: wrong and doesn't know it)
-
-A "partial" answer is treated as an error here (it contains a hallucinated
-part). If you'd rather exclude partials, change IS_ERROR below — but decide
-once, as a team, and write it in the paper.
+Mirror Test Evaluation Metrics
 """
 
 import json
 import sys
+
+from __future__ import annotations
 from collections import defaultdict
+from pathlib import Path
+from tabulate import tabulate
+from typing import NamedTuple
 
 
-def is_error(label):
-    """An answer counts as an error if it's hallucinated or partial."""
-    return label in ("hallucinated", "partial")
+# Stats
+class CategoryStats(NamedTuple):
+    """Hallucination counts for a single (model, category) pair."""
+    total: int
+    hallucinated: int
 
 
-def summarise(path):
-    with open(path) as f:
-        data = json.load(f)
-    rows = [r for r in data["results"] if "error" not in r]
+class ModelStats(NamedTuple):
+    """Aggregate counts for a single model across all categories."""
+    total: int
+    hallucinated: int
+    errors: int
+    detected: int
+    corrected: int
+    overconfident: int
 
-    per_cat = defaultdict(lambda: {"n": 0, "halluc": 0})
-    total = {"n": 0, "halluc": 0, "errors": 0,
-             "detected": 0, "corrected": 0, "overconfident": 0}
 
-    for r in rows:
-        l1 = r["label_layer1"].strip().lower()
-        detected = r["label_self_detected"].strip().lower() == "yes"
-        corrected = r["label_self_corrected"].strip().lower() == "yes"
-        cat = r["category"]
+class ModelSummary(NamedTuple):
+    """Full summary for one result file: model name, per-category and aggregate stats."""
+    model_name: str
+    per_category: dict[str, CategoryStats]
+    totals: ModelStats
 
-        total["n"] += 1
-        per_cat[cat]["n"] += 1
 
-        if l1 == "hallucinated":
-            total["halluc"] += 1
-            per_cat[cat]["halluc"] += 1
+# Helper Methods
+def is_error(label: str) -> bool:
+    """Return True if the label represents a hallucination error (hallucinated or partial)."""
+    return label in {"hallucinated", "partial"}
 
-        if is_error(l1):
-            total["errors"] += 1
+
+def pct(numerator: int, denominator: int) -> str:
+    """Format a ratio as a fixed-width percentage string, or '   n/a' if denominator is zero."""
+    if not denominator:
+        return "   n/a"
+    return f"{100 * numerator / denominator:5.1f}%"
+
+
+# Core logic
+def load_results(path: str | Path) -> tuple[str, list[dict]]:
+    """Load a labelled JSON result file; return the model name and error-free rows."""
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        data = json.load(fh)
+    clean_rows = [row for row in data["results"] if "error" not in row]
+    return data["model"], clean_rows
+
+
+def compute_stats(rows: list[dict]) -> tuple[dict[str, CategoryStats], ModelStats]:
+    """Compute per-category and aggregate metrics from cleaned, labelled result rows."""
+    raw_cats: dict[str, dict[str, int]] = defaultdict(lambda: {"n": 0, "halluc": 0})
+    t = {"n": 0, "halluc": 0, "errors": 0, "detected": 0, "corrected": 0, "overconfident": 0}
+
+    for row in rows:
+        label     = row["label_layer1"].strip().lower()
+        detected  = row["label_self_detected"].strip().lower() == "yes"
+        corrected = row["label_self_corrected"].strip().lower() == "yes"
+        cat       = row["category"]
+
+        t["n"] += 1
+        raw_cats[cat]["n"] += 1
+
+        if label == "hallucinated":
+            t["halluc"] += 1
+            raw_cats[cat]["halluc"] += 1
+
+        if is_error(label):
+            t["errors"] += 1
             if detected:
-                total["detected"] += 1
+                t["detected"] += 1
             else:
-                # Only answers the model missed in Layer 2 get the nudge chance.
+                # Eligible for Layer 3 correction only if missed in Layer 2.
                 if corrected:
-                    total["corrected"] += 1
-                total["overconfident"] += 1  # wrong and didn't catch it
+                    t["corrected"] += 1
+                t["overconfident"] += 1  # wrong and didn't catch it
 
-    return data["model"], per_cat, total
+    per_category = {
+        cat: CategoryStats(total=v["n"], hallucinated=v["halluc"])
+        for cat, v in raw_cats.items()
+    }
+    totals = ModelStats(
+        total=t["n"], hallucinated=t["halluc"], errors=t["errors"],
+        detected=t["detected"], corrected=t["corrected"], overconfident=t["overconfident"],
+    )
+    return per_category, totals
 
 
-def pct(num, den):
-    return f"{100 * num / den:5.1f}%" if den else "   n/a"
+def summarise(path: str | Path) -> ModelSummary:
+    """Load and summarise one result file into a ModelSummary."""
+    model_name, rows = load_results(path)
+    per_category, totals = compute_stats(rows)
+    return ModelSummary(model_name=model_name, per_category=per_category, totals=totals)
 
 
-def main(paths):
+# Table builders
+def build_table1(summaries: list[ModelSummary], categories: list[str]) -> None:
+    """Print Table 1: hallucination rate per model per category, plus an overall column."""
+    rows = []
+    for s in summaries:
+        row = [s.model_name]
+        for cat in categories:
+            stats = s.per_category.get(cat, CategoryStats(0, 0))
+            row.append(pct(stats.hallucinated, stats.total))
+        row.append(pct(s.totals.hallucinated, s.totals.total))
+        rows.append(row)
+
+    print("\nTable 1 — Hallucination Rate by Model and Category\n")
+    print(tabulate(rows, headers=["Model"] + categories + ["Overall"],
+                   tablefmt="rounded_grid", stralign="center", numalign="center"))
+
+
+def build_table2(summaries: list[ModelSummary]) -> None:
+    """Print Table 2: hallucination, self-detection, self-correction, and overconfidence rates."""
+    rows = []
+    for s in summaries:
+        t = s.totals
+        rows.append([
+            s.model_name,
+            pct(t.hallucinated, t.total),
+            pct(t.detected, t.errors),
+            pct(t.corrected, t.errors - t.detected),
+            pct(t.overconfident, t.total),
+        ])
+
+    print("\nTable 2 — Self-Detection, Self-Correction, Overconfidence\n")
+    print(tabulate(rows,
+                   headers=["Model", "Hallucination", "Self-Detection",
+                             "Self-Correction", "Overconfidence"],
+                   tablefmt="rounded_grid", stralign="center", numalign="center"))
+
+
+# Main Method
+def main(paths: list[str]) -> None:
+    """Summarise all result files and print both metric tables."""
     summaries = [summarise(p) for p in paths]
-    categories = sorted({c for _, pc, _ in summaries for c in pc})
-
-    # Table 1 — hallucination rate by model and category.
-    print("\nTable 1 — Hallucination Rate by Model and Category")
-    header = ["Model"] + categories + ["Overall"]
-    print("  ".join(f"{h:>14}" for h in header))
-    for model, pc, total in summaries:
-        cells = [model]
-        for c in categories:
-            cells.append(pct(pc[c]["halluc"], pc[c]["n"]))
-        cells.append(pct(total["halluc"], total["n"]))
-        print("  ".join(f"{c:>14}" for c in cells))
-
-    # Table 2 — detection, correction, overconfidence.
-    print("\nTable 2 — Self-Detection, Self-Correction, Overconfidence")
-    cols = ["Model", "Halluc", "Detect", "Correct", "Overconf"]
-    print("  ".join(f"{c:>14}" for c in cols))
-    for model, _, t in summaries:
-        row = [
-            model,
-            pct(t["halluc"], t["n"]),
-            pct(t["detected"], t["errors"]),
-            pct(t["corrected"], t["errors"] - t["detected"]),
-            pct(t["overconfident"], t["n"]),
-        ]
-        print("  ".join(f"{c:>14}" for c in row))
-    print()
+    all_categories = sorted({cat for s in summaries for cat in s.per_category})
+    build_table1(summaries, all_categories)
+    build_table2(summaries)
 
 
 if __name__ == "__main__":

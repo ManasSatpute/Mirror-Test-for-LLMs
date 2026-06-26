@@ -87,7 +87,7 @@ def call_gemini(messages, model="gemini-1.5-pro"):
     return resp.text
 
 
-def call_groq(messages, model="llama-3.3-70b-versatile"):
+def call_groq(messages, model="llama-3.1-8b"):
     from groq import Groq
     client = Groq()  # reads GROQ_API_KEY
     resp = client.chat.completions.create(
@@ -116,7 +116,7 @@ ADAPTERS = {
     "gpt-4o":   (call_openai,    "gpt-4o"),
     "claude":   (call_anthropic, "claude-sonnet-4-6"),
     "gemini":   (call_gemini,    "gemini-1.5-pro"),
-    "llama-3":  (call_groq,      "llama-3.3-70b-versatile"),
+    "llama-3":  (call_groq,      "llama-3.1-8b"),
     "deepseek": (call_deepseek,  "deepseek/deepseek-chat"),
 }
 
